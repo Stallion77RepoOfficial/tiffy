@@ -122,6 +122,17 @@ tig_extract_result tig_extract(int fd, const tig_tiff_header *h,
     // 2) parçaları dump + akış skoru
     double *s_stream = (double*)calloc(v->count,sizeof(double));
     double *s_tex    = (double*)calloc(v->count,sizeof(double));
+    if (!s_stream || !s_tex){
+        if (!s_stream){
+            LOGE("stream score allocation failed for %llu entries", (unsigned long long)v->count);
+        }
+        if (!s_tex){
+            LOGE("texture score allocation failed for %llu entries", (unsigned long long)v->count);
+        }
+        free(s_stream);
+        free(s_tex);
+        return R;
+    }
     for (uint64_t i=0;i<v->count;i++){
         char part[1024]; snprintf(part,sizeof(part), "%s_part_%04llu.bin", base, (unsigned long long)i);
         size_t n = (size_t)v->sizes[i];
