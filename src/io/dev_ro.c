@@ -15,6 +15,10 @@ void tig_close(int fd){ _close(fd); }
 #else
 #  include <fcntl.h>
 #  include <unistd.h>
+#  include <sys/types.h>
+#  ifndef O_CLOEXEC
+#    define O_CLOEXEC 0
+#  endif
 int tig_open_ro(const char *path){
     int fd = open(path, O_RDONLY | O_CLOEXEC);
     return fd;

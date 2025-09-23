@@ -1,3 +1,7 @@
+#if !defined(_WIN32)
+#define _XOPEN_SOURCE 700
+#endif
+
 #include "tigre.h"
 #include <string.h>
 #include <stdio.h>
@@ -83,6 +87,7 @@ static int pread_chunk(int fd, void *buf, size_t n, uint64_t off){
 }
 #else
 #  include <unistd.h>
+#  include <sys/types.h>
 static int pread_chunk(int fd, void *buf, size_t n, uint64_t off){
     size_t got=0;
     while (got<n){
