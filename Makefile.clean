@@ -1,0 +1,50 @@
+# Unified clean Makefile for removing build artifacts across platforms
+# Usage:
+#   make -f Makefile.clean all     # remove all known artifacts
+#   make -f Makefile.clean mac     # remove only mac binary
+#   make -f Makefile.clean linux   # remove only linux binary
+#   make -f Makefile.clean windows # remove only windows .exe
+#   make -f Makefile.clean android # remove only android binaries
+
+
+.PHONY: all mac linux windows list objs distclean
+
+# Binaries produced by platform makefiles
+MAC_BIN := tiffy_mac
+LINUX_BIN := tiffy_linux
+WIN_BIN := tiffy_win.exe
+
+# object files under src
+OBJ_PATTERNS := $(wildcard src/**/*.o) $(wildcard src/*.o) $(wildcard */src/*.o) 2>/dev/null
+
+mac:
+	@rm -f $(MAC_BIN)
+	@echo "Removed $(MAC_BIN)"
+
+linux:
+	@rm -f $(LINUX_BIN)
+	@echo "Removed $(LINUX_BIN)"
+
+windows:
+	@rm -f $(WIN_BIN)
+	@echo "Removed $(WIN_BIN)"
+
+objs:
+	@rm -rf build || true
+	@find src -name '*.o' -print -delete || true
+	@echo "Removed object files under src/ and build/ directories"
+
+all: mac linux windows objs
+	@echo "Clean complete."
+
+distclean: all
+	@rm -f core core.* *.core
+	@echo "Distclean complete (core dumps removed)."
+
+list:
+	@echo "Will remove (if exist):"
+	@echo "  $(MAC_BIN)"
+	@echo "  $(LINUX_BIN)"
+	@echo "  $(WIN_BIN)"
+	@echo "Use: make -f Makefile.clean all"
+

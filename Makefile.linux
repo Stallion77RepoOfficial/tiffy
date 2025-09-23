@@ -1,0 +1,53 @@
+
+# Linux build for this C project
+.PHONY: all clean
+
+EXE := tiffy_linux
+
+SOURCES := \
+  src/cli/tig_cli.c \
+  src/core/engine.c \
+  src/core/report.c \
+  src/core/log.c \
+  src/carve/sig_scan.c \
+  src/carve/tiff_ifd.c \
+  src/carve/tiff_write.c \
+  src/carve/streams.c \
+  src/carve/reasm.c \
+  src/io/dev_ro.c \
+  src/io/clone_img.c
+
+CC := gcc
+CFLAGS := -O3 -std=c11 -Wall -Wextra -Wpedantic -ffp-contract=fast -D_FILE_OFFSET_BITS=64
+LDFLAGS :=
+LIBS := -lm
+STRIP := strip
+
+USE_ZLIB ?= 0
+ifeq ($(USE_ZLIB),1)
+  CFLAGS  += -DUSE_ZLIB=1
+  LIBS    += -lz
+endif
+
+BUILD_DIR := build/linux
+OBJ := $(patsubst %.c,$(BUILD_DIR)/%.o,$(SOURCES))
+
+
+all: $(EXE)
+	@echo "Built $(EXE)"
+	@if command -v $(STRIP) >/dev/null 2>&1; then \
+		$(STRIP) $(EXE); \
+	else \
+		echo "Strip tool '$(STRIP)' not found; skipping."; \
+	fi
+
+$(EXE): $(OBJ)
+	@echo "Linking $(EXE)..."
+	$(CC) $(OBJ) $(LDFLAGS) -o $(EXE) $(LIBS)
+
+$(BUILD_DIR)/%.o: %.c include/tigre.h
+	@mkdir -p $(dir $@)
+	$(CC) $(CFLAGS) -Iinclude -Isrc -c $< -o $@
+
+clean:
+	rm -f $(OBJ) $(EXE)
