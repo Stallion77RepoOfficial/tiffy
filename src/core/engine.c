@@ -6,6 +6,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <errno.h>
 #include <unistd.h>     // pread()
 #include <fcntl.h>
 #include <sys/types.h>
@@ -19,6 +20,59 @@
 #endif
 
 static int pread_some(int fd, void *buf, size_t n, uint64_t off);
+static int ensure_directory(const char *path);
+
+#if defined(_WIN32)
+static int make_dir_single(const char *path){
+    if (!path || !*path) return 0;
+    if (_mkdir(path)==0) return 0;
+    if (errno==EEXIST) return 0;
+    return -1;
+}
+#else
+static int make_dir_single(const char *path){
+    if (!path || !*path) return 0;
+    if (mkdir(path, 0755)==0) return 0;
+    if (errno==EEXIST) return 0;
+    return -1;
+}
+#endif
+
+static int ensure_directory(const char *path){
+    if (!path || !*path) return 0;
+    char tmp[1024];
+    size_t len = strlen(path);
+    if (len >= sizeof(tmp)){ errno = ENAMETOOLONG; return -1; }
+    memcpy(tmp, path, len+1);
+
+    size_t start = 0;
+#if defined(_WIN32)
+    if (len >= 2 && tmp[1]==':') start = 2; // skip drive letter
+#endif
+    for (size_t i=start;i<len;i++){
+        if (tmp[i]=='/' || tmp[i]=='\\'){
+            char saved = tmp[i];
+            tmp[i] = '\0';
+            size_t sub_len = strlen(tmp);
+#if defined(_WIN32)
+            if (!(sub_len==2 && tmp[1]==':'))
+#endif
+            {
+                if (sub_len>0 && strcmp(tmp,".")!=0 && strcmp(tmp,"..")!=0){
+                    if (make_dir_single(tmp)!=0 && errno!=EEXIST) return -1;
+                }
+            }
+            tmp[i] = saved;
+        }
+    }
+    if (len>0 && strcmp(tmp,".")!=0 && strcmp(tmp,"..")!=0){
+#if defined(_WIN32)
+        if (len==2 && tmp[1]==':') return 0;
+#endif
+        if (make_dir_single(tmp)!=0 && errno!=EEXIST) return -1;
+    }
+    return 0;
+}
 
 extern double tig_score_deflate(const unsigned char*, size_t);
 extern double tig_score_lzw(const unsigned char*, size_t);
@@ -39,6 +93,7 @@ tig_extract_result tig_extract(int fd, const tig_tiff_header *h,
                                const tig_tiff_ifd *v, const char *out_dir, const char *stem)
 {
     tig_extract_result R={0};
+    (void)h;
     char base[1024];
     snprintf(base,sizeof(base), "%s/%s", out_dir, stem);
 
@@ -115,11 +170,10 @@ int tig_engine_scan_recover(const char *img_path, const char *out_dir,
                             uint64_t max_hits, int vlevel)
 {
     (void)prefer_free_space; (void)fs_list_csv; (void)vlevel;
-#if defined(_WIN32)
-    _mkdir(out_dir);
-#else
-    char cmd[1024]; snprintf(cmd,sizeof(cmd),"mkdir -p \"%s\"", out_dir); system(cmd);
-#endif
+    if (ensure_directory(out_dir)!=0){
+        LOGE("çıktı dizini oluşturulamadı: %s (%s)", out_dir, strerror(errno));
+        return 1;
+    }
 
     int fd = tig_open_ro(img_path);
     if (fd<0){ LOGE("imaj açılamadı: %s", img_path); return 1; }
@@ -158,11 +212,10 @@ int tig_engine_dig_range(const char *img_path, tig_range range,
                          const char *out_dir, const char *heur_csv, int vlevel)
 {
     (void)heur_csv; (void)vlevel;
-#if defined(_WIN32)
-    _mkdir(out_dir);
-#else
-    char cmd[1024]; snprintf(cmd,sizeof(cmd),"mkdir -p \"%s\"", out_dir); system(cmd);
-#endif
+    if (ensure_directory(out_dir)!=0){
+        LOGE("çıktı dizini oluşturulamadı: %s (%s)", out_dir, strerror(errno));
+        return 1;
+    }
     int fd = tig_open_ro(img_path);
     if (fd<0){ LOGE("imaj açılamadı: %s", img_path); return 1; }
 
