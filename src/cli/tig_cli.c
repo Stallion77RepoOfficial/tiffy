@@ -8,8 +8,8 @@ static void usage(void){
         fprintf(stderr,
             PROJECT_NAME " usage:\n"
             "  --clone --src <device> --dst <image> [--map map.json]\n"
-            "  --scan  --img <image> --out <dir> [--max-hits N]\n"
-            "  --dig   --img <image> --range <start:end> --out <dir>\n");
+            "  --scan  (--img <image> | --system <device>) --out <dir> [--max-hits N]\n"
+            "  --dig   (--img <image> | --system <device>) --range <start:end> --out <dir>\n");
 }
 
 int main(int argc, char **argv){
@@ -27,19 +27,33 @@ int main(int argc, char **argv){
         return tig_clone_to_img(src,dst,map,1<<20,3,1);
 
     } else if (strcmp(argv[1],"--scan")==0){
-        const char *img=0,*out="./out"; uint64_t maxh=1000;
+        const char *source=0,*out="./out"; uint64_t maxh=1000; int src_mode=0;
         for (int i=2;i<argc;i++){
-            if (!strcmp(argv[i],"--img") && i+1<argc) img=argv[++i];
+            if (!strcmp(argv[i],"--img") && i+1<argc){
+                if (src_mode){ usage(); return 1; }
+                source=argv[++i]; src_mode=1;
+            }
+            else if (!strcmp(argv[i],"--system") && i+1<argc){
+                if (src_mode){ usage(); return 1; }
+                source=argv[++i]; src_mode=2;
+            }
             else if (!strcmp(argv[i],"--out") && i+1<argc) out=argv[++i];
             else if (!strcmp(argv[i],"--max-hits") && i+1<argc) maxh=strtoull(argv[++i],0,10);
         }
-        if (!img){ usage(); return 1; }
-        return tig_engine_scan_recover(img,out,0,0,maxh,1);
+        if (!source){ usage(); return 1; }
+        return tig_engine_scan_recover(source,out,0,0,maxh,1);
 
     } else if (strcmp(argv[1],"--dig")==0){
-        const char *img=0,*out="./out"; uint64_t s=0,e=0;
+        const char *source=0,*out="./out"; uint64_t s=0,e=0; int src_mode=0;
         for (int i=2;i<argc;i++){
-            if (!strcmp(argv[i],"--img") && i+1<argc) img=argv[++i];
+            if (!strcmp(argv[i],"--img") && i+1<argc){
+                if (src_mode){ usage(); return 1; }
+                source=argv[++i]; src_mode=1;
+            }
+            else if (!strcmp(argv[i],"--system") && i+1<argc){
+                if (src_mode){ usage(); return 1; }
+                source=argv[++i]; src_mode=2;
+            }
             else if (!strcmp(argv[i],"--out") && i+1<argc) out=argv[++i];
             else if (!strcmp(argv[i],"--range") && i+1<argc){
                 char *tok = strtok(argv[++i],":");
@@ -48,9 +62,9 @@ int main(int argc, char **argv){
                 if(tok) e = strtoull(tok,0,10);
             }
         }
-        if (!img || !e){ usage(); return 1; }
+        if (!source || !e){ usage(); return 1; }
         tig_range r={s,e};
-        return tig_engine_dig_range(img,r,out,0,1);
+        return tig_engine_dig_range(source,r,out,0,1);
     }
 
     usage();
