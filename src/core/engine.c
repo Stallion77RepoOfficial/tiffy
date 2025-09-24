@@ -21,6 +21,9 @@
 
 static int pread_some(int fd, void *buf, size_t n, uint64_t off);
 static int ensure_directory(const char *path);
+static void build_with_suffix(char *dst, size_t dst_sz, const char *base, const char *suffix);
+static void build_part_filename(char *dst, size_t dst_sz, const char *base, unsigned long long idx);
+static size_t tig_strnlen(const char *s, size_t max_len);
 
 #if defined(_WIN32)
 static int make_dir_single(const char *path){
@@ -74,6 +77,44 @@ static int ensure_directory(const char *path){
     return 0;
 }
 
+static size_t tig_strnlen(const char *s, size_t max_len){
+    size_t i = 0;
+    if (!s) return 0;
+    for (; i<max_len && s[i]; i++);
+    return i;
+}
+
+static void build_with_suffix(char *dst, size_t dst_sz, const char *base, const char *suffix){
+    if (!dst || dst_sz==0) return;
+    size_t base_len = tig_strnlen(base, dst_sz-1);
+    if (base_len > dst_sz-1) base_len = dst_sz-1;
+    memcpy(dst, base, base_len);
+    size_t remain = dst_sz - base_len;
+    if (remain == 0){ dst[dst_sz-1] = '\0'; return; }
+    size_t suf_len = strlen(suffix ? suffix : "");
+    if (suf_len >= remain) suf_len = remain-1;
+    memcpy(dst + base_len, suffix, suf_len);
+    dst[base_len + suf_len] = '\0';
+}
+
+static void build_part_filename(char *dst, size_t dst_sz, const char *base, unsigned long long idx){
+    if (!dst || dst_sz==0) return;
+    size_t base_len = tig_strnlen(base, dst_sz-1);
+    const size_t suffix_reserve = 20; // _part_0000.bin
+    if (base_len > dst_sz-1) base_len = dst_sz-1;
+    if (base_len + suffix_reserve >= dst_sz){
+        if (dst_sz > suffix_reserve)
+            base_len = dst_sz - suffix_reserve - 1;
+        else
+            base_len = 0;
+    }
+    memcpy(dst, base, base_len);
+    int w = snprintf(dst + base_len, dst_sz - base_len, "_part_%04llu.bin", idx);
+    if (w < 0 || (size_t)w >= dst_sz - base_len){
+        dst[dst_sz-1] = '\0';
+    }
+}
+
 extern double tig_score_deflate(const unsigned char*, size_t);
 extern double tig_score_lzw(const unsigned char*, size_t);
 extern double tig_score_packbits(const unsigned char*, size_t);
@@ -90,12 +131,27 @@ static int is_contiguous(const tig_tiff_ifd *v){
 }
 
 tig_extract_result tig_extract(int fd, const tig_tiff_header *h,
-                               const tig_tiff_ifd *v, const char *out_dir, const char *stem)
+                               const tig_tiff_ifd *v, const char *out_dir, const char *stem,
+                               tig_fragment_pool *pool_out,
+                               tig_validation_summary *summary_out)
 {
     tig_extract_result R={0};
     (void)h;
     char base[1024];
     snprintf(base,sizeof(base), "%s/%s", out_dir, stem);
+
+    tig_fragment_pool pool_local;
+    tig_fragment_pool *pool_ptr = NULL;
+    int pool_valid = 0;
+    if (pool_out){
+        memset(pool_out, 0, sizeof(*pool_out));
+    }
+    if (tig_fragment_pool_init(&pool_local, (size_t)((v->count<1024)?v->count:1024), 1<<20)==0){
+        pool_ptr = &pool_local;
+        pool_valid = 1;
+    } else {
+        LOGW("fragment havuzu oluşturulamadı, yeniden birleştirme aday araması devre dışı");
+    }
 
     // 1) contiguous → full
     if (is_contiguous(v)){
@@ -105,14 +161,16 @@ tig_extract_result tig_extract(int fd, const tig_tiff_header *h,
         unsigned char *buf = (unsigned char*)malloc((size_t)len);
         if (buf && pread_some(fd, buf, (size_t)len, start)==0){
             if (v->compression==1){
-                char outp[1024]; snprintf(outp,sizeof(outp), "%s_full_uncomp.tif", base);
+                char outp[1024];
+                build_with_suffix(outp, sizeof(outp), base, "_full_uncomp.tif");
                 if (tig_write_simple_tiff_uncompressed(outp, buf, (size_t)len,
                     v->image_width, v->image_length, v->bits_per_sample,
                     v->samples_per_pixel, v->photometric)==0){
                     R.full_ok=1; R.bytes_full=len;
                 }
             } else {
-                char outp[1024]; snprintf(outp,sizeof(outp), "%s_full.bin", base);
+                char outp[1024];
+                build_with_suffix(outp, sizeof(outp), base, "_full.bin");
                 FILE *f=fopen(outp,"wb"); if(f){ fwrite(buf,1,(size_t)len,f); fclose(f); R.bytes_full=len; }
             }
         }
@@ -129,12 +187,18 @@ tig_extract_result tig_extract(int fd, const tig_tiff_header *h,
         if (!s_tex){
             LOGE("texture score allocation failed for %llu entries", (unsigned long long)v->count);
         }
+        if (pool_valid){
+            tig_fragment_pool_free(pool_ptr);
+        }
         free(s_stream);
         free(s_tex);
         return R;
     }
+    double stream_sum = 0.0, tex_sum = 0.0;
+    uint64_t observed_segments = 0;
     for (uint64_t i=0;i<v->count;i++){
-        char part[1024]; snprintf(part,sizeof(part), "%s_part_%04llu.bin", base, (unsigned long long)i);
+        char part[1024];
+        build_part_filename(part, sizeof(part), base, (unsigned long long)i);
         size_t n = (size_t)v->sizes[i];
         if (n==0 || n>(1u<<30)) continue;
         unsigned char *b = (unsigned char*)malloc(n);
@@ -146,6 +210,36 @@ tig_extract_result tig_extract(int fd, const tig_tiff_header *h,
             else if (v->compression==32773) s_stream[i]=tig_score_packbits(b,n);
             else s_stream[i]=0.5;
             s_tex[i]=0.0; // V3: texture continuity (only for uncompressed path)
+            if (pool_valid){
+                tig_fragment_pool_ingest(pool_ptr, v->offsets[i], b, n, v->compression, s_stream[i], s_tex[i]);
+            }
+            stream_sum += s_stream[i];
+            tex_sum += s_tex[i];
+            observed_segments++;
+        }
+        else {
+            R.missing_parts++;
+            if (pool_valid){
+                tig_fragment_match match;
+                if (tig_fragment_pool_find_candidate(pool_ptr, n, v->compression, 0.55, &match)==0 &&
+                    match.data && match.data_len >= n){
+                    FILE *pf=fopen(part,"wb");
+                    if (pf){ fwrite(match.data,1,n,pf); fclose(pf); R.parts_written++; }
+                    s_stream[i] = match.stream_score;
+                    s_tex[i] = match.texture_score;
+                    stream_sum += s_stream[i];
+                    tex_sum += s_tex[i];
+                    observed_segments++;
+                    LOGW("strip/tile %llu için havuzdan %llu ofsetli aday kullanıldı (skor %.2f)",
+                         (unsigned long long)i,
+                         (unsigned long long)match.offset,
+                         match.match_score);
+                } else {
+                    LOGW("strip/tile %llu (beklenen %zu bayt) okunamadı ve aday bulunamadı", (unsigned long long)i, n);
+                }
+            } else {
+                LOGW("strip/tile %llu (beklenen %zu bayt) okunamadı", (unsigned long long)i, n);
+            }
         }
         free(b);
     }
@@ -154,7 +248,8 @@ tig_extract_result tig_extract(int fd, const tig_tiff_header *h,
     if (!is_contiguous(v) && v->count>1){
         uint32_t *order=0, m=0;
         if (tig_reassemble_order(v->offsets, v->sizes, (uint32_t)v->count, s_stream, s_tex, &order, &m)==0 && order){
-            char cand[1024]; snprintf(cand,sizeof(cand), "%s_candidate.bin", base);
+            char cand[1024];
+            build_with_suffix(cand, sizeof(cand), base, "_candidate.bin");
             FILE *cf=fopen(cand,"wb");
             if (cf){
                 for (uint32_t k=0;k<m;k++){
@@ -171,6 +266,38 @@ tig_extract_result tig_extract(int fd, const tig_tiff_header *h,
         }
     }
 
+    tig_validation_summary summary_local;
+    tig_validation_summary *summary_ptr = NULL;
+    if (summary_out){
+        memset(summary_out, 0, sizeof(*summary_out));
+        summary_ptr = summary_out;
+    } else {
+        summary_ptr = &summary_local;
+    }
+    tig_validation_summarize(v, pool_valid?pool_ptr:NULL, s_stream, s_tex, v->count, R.missing_parts, summary_ptr);
+    if (observed_segments>0){
+        R.score_stream = stream_sum / (double)observed_segments;
+        R.score_texture = tex_sum / (double)observed_segments;
+    } else {
+        R.score_stream = summary_ptr->stream_avg;
+        R.score_texture = summary_ptr->texture_avg;
+    }
+    R.confidence = summary_ptr->confidence;
+
+    if (pool_out && pool_valid){
+        *pool_out = *pool_ptr;
+        // lokali boşalt ki caller free etsin
+        pool_ptr->items = NULL;
+        pool_ptr->count = 0;
+        pool_ptr->capacity = 0;
+        pool_ptr->capture_limit = 0;
+    }
+    if (summary_out){
+        // summary already stored in summary_out
+    }
+    if (pool_valid){
+        tig_fragment_pool_free(pool_ptr);
+    }
     free(s_stream); free(s_tex);
     return R;
 }
@@ -203,13 +330,16 @@ int tig_engine_scan_recover(const char *img_path, const char *out_dir,
         char stem[128]; snprintf(stem,sizeof(stem), "hit_%04llu", (unsigned long long)hits);
         tig_tiff_ifd ifd;
         if (tig_parse_ifd(fd, &hdr, &ifd)==0){
-            tig_extract_result r = tig_extract(fd, &hdr, &ifd, out_dir, stem);
+            tig_fragment_pool pool = {0};
+            tig_validation_summary summary = {0};
+            tig_extract_result r = tig_extract(fd, &hdr, &ifd, out_dir, stem, &pool, &summary);
             // If we got a contiguous uncompressed TIFF full_ok, try to ensure .tif extension
             if (r.full_ok){
                 // the extractor already wrote a file named <stem>_full_uncomp.tif when possible
                 LOGI("recovered full TIFF for %s", stem);
             }
-            tig_write_report(out_dir, stem, &hdr, &ifd, &r);
+            tig_write_report(out_dir, stem, &hdr, &ifd, &r, &pool, &summary);
+            tig_fragment_pool_free(&pool);
             tig_free_ifd(&ifd);
         }
         hits++;
@@ -239,8 +369,11 @@ int tig_engine_dig_range(const char *img_path, tig_range range,
         char stem[128]; snprintf(stem,sizeof(stem), "range_hit_%04llu", (unsigned long long)idx++);
         tig_tiff_ifd ifd;
         if (tig_parse_ifd(fd, &hdr, &ifd)==0){
-            tig_extract_result r = tig_extract(fd, &hdr, &ifd, out_dir, stem);
-            tig_write_report(out_dir, stem, &hdr, &ifd, &r);
+            tig_fragment_pool pool = {0};
+            tig_validation_summary summary = {0};
+            tig_extract_result r = tig_extract(fd, &hdr, &ifd, out_dir, stem, &pool, &summary);
+            tig_write_report(out_dir, stem, &hdr, &ifd, &r, &pool, &summary);
+            tig_fragment_pool_free(&pool);
             tig_free_ifd(&ifd);
         }
     }

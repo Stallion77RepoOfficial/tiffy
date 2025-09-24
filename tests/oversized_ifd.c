@@ -1,3 +1,6 @@
+#if !defined(_WIN32)
+#define _XOPEN_SOURCE 700
+#endif
 #include <assert.h>
 #include <errno.h>
 #include <stdint.h>
@@ -25,9 +28,11 @@ int tig_write_simple_tiff_uncompressed(const char *path,
 }
 int tig_write_report(const char *dir, const char *stem,
                      const tig_tiff_header *h, const tig_tiff_ifd *v,
-                     const tig_extract_result *r)
+                     const tig_extract_result *r,
+                     const tig_fragment_pool *pool,
+                     const tig_validation_summary *summary)
 {
-    (void)dir; (void)stem; (void)h; (void)v; (void)r;
+    (void)dir; (void)stem; (void)h; (void)v; (void)r; (void)pool; (void)summary;
     return 0;
 }
 int tig_open_ro(const char *path) { (void)path; return -1; }
@@ -43,6 +48,29 @@ int tig_parse_ifd(int fd, const tig_tiff_header *hdr, tig_tiff_ifd *out_ifd)
     return -1;
 }
 void tig_free_ifd(tig_tiff_ifd *v) { (void)v; }
+
+int tig_fragment_pool_init(tig_fragment_pool *pool, size_t capacity_hint, size_t capture_limit)
+{ (void)pool; (void)capacity_hint; (void)capture_limit; return 0; }
+void tig_fragment_pool_reset(tig_fragment_pool *pool) { (void)pool; }
+void tig_fragment_pool_free(tig_fragment_pool *pool) { (void)pool; }
+int tig_fragment_pool_ingest(tig_fragment_pool *pool, uint64_t offset,
+                              const unsigned char *buf, size_t len,
+                              uint16_t compression, double stream_score,
+                              double texture_score)
+{ (void)pool; (void)offset; (void)buf; (void)len; (void)compression; (void)stream_score; (void)texture_score; return 0; }
+int tig_fragment_pool_find_candidate(const tig_fragment_pool *pool,
+                                      uint64_t desired_len, uint16_t compression,
+                                      double tolerance, tig_fragment_match *out)
+{ (void)pool; (void)desired_len; (void)compression; (void)tolerance; (void)out; return -1; }
+
+int tig_validation_summarize(const tig_tiff_ifd *ifd,
+                              const tig_fragment_pool *pool,
+                              const double *stream_scores,
+                              const double *texture_scores,
+                              uint64_t count,
+                              uint32_t missing_parts,
+                              tig_validation_summary *out_summary)
+{ (void)ifd; (void)pool; (void)stream_scores; (void)texture_scores; (void)count; (void)missing_parts; (void)out_summary; return 0; }
 
 // Pull in the implementation under test.
 #include "../src/core/engine.c"
@@ -68,7 +96,7 @@ int main(void)
     ifd.sizes = sizes;
 
     errno = 0;
-    tig_extract_result r = tig_extract(-1, &hdr, &ifd, ".", "oversized_ifd");
+    tig_extract_result r = tig_extract(-1, &hdr, &ifd, ".", "oversized_ifd", NULL, NULL);
 
     assert(r.full_ok == 0);
     assert(r.parts_written == 0);

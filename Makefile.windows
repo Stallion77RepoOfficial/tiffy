@@ -8,6 +8,8 @@ SOURCES := \
   src/cli/tig_cli.c \
   src/core/engine.c \
   src/core/report.c \
+  src/core/fragment.c \
+  src/core/validator.c \
   src/core/log.c \
   src/carve/sig_scan.c \
   src/carve/tiff_ifd.c \

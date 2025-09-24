@@ -47,12 +47,58 @@ typedef struct {
     uint32_t missing_parts;
     double   score_stream;     // 0..1 (Deflate/LZW checks)
     double   score_texture;    // 0..1 (V3 texture continuity)
+    double   confidence;       // 0..1 birleşik güven puanı
 } tig_extract_result;
 
 typedef struct {
     uint64_t start_lba;
     uint64_t end_lba;
 } tig_range;
+
+typedef struct {
+    uint64_t offset;
+    uint64_t length;
+    uint16_t compression;
+    uint64_t hash64;
+    double   entropy;
+    double   header_score;
+    double   stream_score;
+    double   texture_score;
+    unsigned char *capture;
+    size_t   capture_len;
+} tig_fragment_entry;
+
+typedef struct {
+    tig_fragment_entry *items;
+    size_t count;
+    size_t capacity;
+    size_t capture_limit;
+} tig_fragment_pool;
+
+typedef struct {
+    uint64_t offset;
+    uint64_t length;
+    uint16_t compression;
+    uint64_t hash64;
+    double   entropy;
+    double   header_score;
+    double   stream_score;
+    double   texture_score;
+    const unsigned char *data;
+    size_t   data_len;
+    double   match_score;
+} tig_fragment_match;
+
+typedef struct {
+    double   stream_avg;
+    double   texture_avg;
+    double   entropy_avg;
+    double   coverage_ratio;
+    uint32_t segments_indexed;
+    uint32_t missing_parts;
+    double   confidence;
+    int      coverage_ok;
+} tig_validation_summary;
 
 // io
 int  tig_open_ro(const char *path); // returns fd >=0
@@ -73,7 +119,30 @@ void tig_free_ifd(tig_tiff_ifd *v);
 // extraction (dump + optional rebuild)
 tig_extract_result tig_extract(int fd, const tig_tiff_header *hdr,
                                const tig_tiff_ifd *ifd,
-                               const char *out_dir, const char *stem);
+                               const char *out_dir, const char *stem,
+                               tig_fragment_pool *pool_out,
+                               tig_validation_summary *summary_out);
+
+// fragment yönetimi
+int  tig_fragment_pool_init(tig_fragment_pool *pool, size_t capacity_hint, size_t capture_limit);
+void tig_fragment_pool_reset(tig_fragment_pool *pool);
+void tig_fragment_pool_free(tig_fragment_pool *pool);
+int  tig_fragment_pool_ingest(tig_fragment_pool *pool, uint64_t offset,
+                              const unsigned char *buf, size_t len,
+                              uint16_t compression, double stream_score,
+                              double texture_score);
+int  tig_fragment_pool_find_candidate(const tig_fragment_pool *pool,
+                                      uint64_t desired_len, uint16_t compression,
+                                      double tolerance, tig_fragment_match *out);
+
+// doğrulama
+int  tig_validation_summarize(const tig_tiff_ifd *ifd,
+                              const tig_fragment_pool *pool,
+                              const double *stream_scores,
+                              const double *texture_scores,
+                              uint64_t count,
+                              uint32_t missing_parts,
+                              tig_validation_summary *out_summary);
 
 // write minimal TIFF (uncompressed single-strip)
 int tig_write_simple_tiff_uncompressed(const char *path,
@@ -92,7 +161,9 @@ int tig_engine_dig_range(const char *img_path, tig_range range,
 // reports
 int tig_write_report(const char *dir, const char *stem,
                      const tig_tiff_header *h, const tig_tiff_ifd *v,
-                     const tig_extract_result *r);
+                     const tig_extract_result *r,
+                     const tig_fragment_pool *pool,
+                     const tig_validation_summary *summary);
 
 #ifdef __cplusplus
 }
