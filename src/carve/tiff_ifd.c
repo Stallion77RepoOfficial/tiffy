@@ -8,6 +8,9 @@
 #include <stdio.h>
 #include <sys/types.h>
 #include <unistd.h>
+#include <errno.h>
+#include <stdint.h>
+#include <limits.h>
 
 static int pread_all(int fd, void *buf, size_t n, uint64_t off);
 
@@ -24,15 +27,31 @@ static inline uint64_t U64(const unsigned char*p,int le){
 static int read_array64(int fd, int big, int le, int type, uint64_t count, uint64_t val_or_off,
                         uint64_t base, uint64_t **out)
 {
+    if (out) *out = NULL;
+    if (count == 0) return 0;
     // normalize to 64-bit array
     size_t el = (type==3?2 : type==4?4 : 8);
+    if (count > SIZE_MAX / el || count > SIZE_MAX / sizeof(uint64_t)){
+        errno = ENOMEM;
+        return -5;
+    }
     size_t total = (size_t)(count * el);
     unsigned char *tmp = malloc(total);
-    if (!tmp) return -1;
-    uint64_t abs = big ? val_or_off : (base + val_or_off);
+    if (!tmp){ errno = ENOMEM; return -1; }
+    uint64_t abs;
+    if (big){
+        abs = val_or_off;
+    } else {
+        if (val_or_off > UINT64_MAX - base){
+            free(tmp);
+            errno = EOVERFLOW;
+            return -4;
+        }
+        abs = base + val_or_off;
+    }
     if (pread_all(fd, tmp, total, abs)!=0){ free(tmp); return -2; }
     uint64_t *a = (uint64_t*)malloc(sizeof(uint64_t)*count);
-    if (!a){ free(tmp); return -3; }
+    if (!a){ free(tmp); errno = ENOMEM; return -3; }
     for (uint64_t i=0;i<count;i++){
         const unsigned char *p = tmp + i*el;
         if (el==2) a[i] = (uint64_t)U16(p, le);
@@ -62,6 +81,7 @@ int tig_parse_ifd(int fd, const tig_tiff_header *hdr, tig_tiff_ifd *out){
     uint64_t *tile_offs=0,*tile_sz=0, tc=0;
     uint64_t rows_per_strip=0, tile_w=0, tile_h=0;
     uint64_t iw=0, ih=0; uint16_t bps=0,spp=0,comp=1,photo=0,planar=1,predict=1;
+    int rc_error = 0;
 
     for (uint64_t i=0;i<n;i++){
         unsigned char *e = ents + i*esz;
@@ -135,16 +155,30 @@ int tig_parse_ifd(int fd, const tig_tiff_header *hdr, tig_tiff_ifd *out){
                 uint64_t *tmp=0; if (read_array64(fd, hdr->is_big_tiff, hdr->is_le, typ, 1, val, base, &tmp)==0){ tile_h=tmp[0]; free(tmp); }
             } break;
             case 273: { // StripOffsets
-                sc = cnt; read_array64(fd, hdr->is_big_tiff, hdr->is_le, typ, cnt, val, base, &strip_offs);
+                uint64_t *tmp = NULL;
+                int rc = read_array64(fd, hdr->is_big_tiff, hdr->is_le, typ, cnt, val, base, &tmp);
+                if (rc!=0){ rc_error = rc; goto fail; }
+                strip_offs = tmp;
+                sc = cnt;
             } break;
             case 279: { // StripByteCounts
-                read_array64(fd, hdr->is_big_tiff, hdr->is_le, typ, cnt, val, base, &strip_sz);
+                uint64_t *tmp = NULL;
+                int rc = read_array64(fd, hdr->is_big_tiff, hdr->is_le, typ, cnt, val, base, &tmp);
+                if (rc!=0){ rc_error = rc; goto fail; }
+                strip_sz = tmp;
             } break;
             case 324: { // TileOffsets
-                tc = cnt; read_array64(fd, hdr->is_big_tiff, hdr->is_le, typ, cnt, val, base, &tile_offs);
+                uint64_t *tmp = NULL;
+                int rc = read_array64(fd, hdr->is_big_tiff, hdr->is_le, typ, cnt, val, base, &tmp);
+                if (rc!=0){ rc_error = rc; goto fail; }
+                tile_offs = tmp;
+                tc = cnt;
             } break;
             case 325: { // TileByteCounts
-                read_array64(fd, hdr->is_big_tiff, hdr->is_le, typ, cnt, val, base, &tile_sz);
+                uint64_t *tmp = NULL;
+                int rc = read_array64(fd, hdr->is_big_tiff, hdr->is_le, typ, cnt, val, base, &tmp);
+                if (rc!=0){ rc_error = rc; goto fail; }
+                tile_sz = tmp;
             } break;
             default: break;
         }
@@ -172,6 +206,14 @@ int tig_parse_ifd(int fd, const tig_tiff_header *hdr, tig_tiff_ifd *out){
         return -4;
     }
     return 0;
+
+fail:
+    free(ents);
+    if (strip_offs) free(strip_offs);
+    if (strip_sz) free(strip_sz);
+    if (tile_offs) free(tile_offs);
+    if (tile_sz) free(tile_sz);
+    return rc_error ? rc_error : -5;
 }
 
 void tig_free_ifd(tig_tiff_ifd *v){
